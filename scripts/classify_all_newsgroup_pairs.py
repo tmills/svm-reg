@@ -20,6 +20,7 @@ from keras.callbacks import EarlyStopping
 from keras.optimizers import SGD
 from keras import regularizers
 from keras.initializers import Zeros, Ones, RandomNormal, RandomUniform, TruncatedNormal, Orthogonal, Identity, lecun_uniform, glorot_normal, glorot_uniform, he_normal, lecun_normal, he_uniform
+from keras import backend as K
 
 ## All categories in the 20 newsgroups data.
 cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
@@ -45,7 +46,11 @@ def main(args):
             scaler = StandardScaler(with_mean=False)
             print(scaler.fit(vectors))
             ## Doesn't seem to matter
-            #vectors = scaler.transform(vectors)
+            scaled_vectors = scaler.transform(vectors)
+            ## Put targets in the range -1 to 1 instead of 0/1
+            binary_targets = newsgroups_train.target
+            class_targets = newsgroups_train.target * 2 - 1
+            #targets = newsgroups_train.target * 2 - 1
 
             print("Classifying %s vs. %s" % (cat1, cat2))
 
@@ -55,9 +60,9 @@ def main(args):
             sp_model = KerasClassifier(build_fn=get_svmlike_model, input_dims=vectors.shape[1], l2_weight=0.01, epochs=50, validation_split=0.2)
 
             #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
-            param_grid={'l2_weight':[0.001,0.01,0.1], 'lr':[0.001,0.01,0.1,1.0]}
+            param_grid={'l2_weight':[0.001,0.01], 'lr':[0.001,0.01]}
             clf = GridSearchCV(sp_model, param_grid, scoring=scorer)
-            clf.fit(vectors.toarray(), newsgroups_train.target)
+            clf.fit(vectors.toarray(), class_targets)
             print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
 
             print("Classifying with linear svm:")
@@ -65,7 +70,7 @@ def main(args):
             params = {'C':[0.01, 0.1, 1.0, 10.0, 100]}
             svc = svm.LinearSVC()
             clf = GridSearchCV(svc, params, scoring=scorer)
-            clf.fit(vectors, newsgroups_train.target)
+            clf.fit(vectors, targets)
             print("Best SVM performance was %f with c=%f" % (clf.best_score_, clf.best_params_['C']))
 
             sys.exit(-1)
@@ -75,11 +80,14 @@ def get_svmlike_model(input_dims, l2_weight=0.01, lr=0.1, initializer=glorot_uni
 
     model = Sequential()
     ## Default initializer is glorot_uniform
-    model.add(Dense(1, use_bias=True, input_dim=input_dims, kernel_initializer=initializer, kernel_regularizer=regularizers.l2(l2_weight), activation='linear'))
+    model.add(Dense(1, use_bias=True, input_dim=input_dims,
+                kernel_initializer=initializer,
+                kernel_regularizer=regularizers.l2(l2_weight),
+                activation='linear'))
     #model = Model(input=inputs, outputs=predictions)``
     optimizer = SGD(lr=lr)
     model.compile(optimizer=optimizer,
-                loss='squared_hinge',
+                loss='hinge',
                 metrics=['accuracy'])
     return model
 
@@ -89,9 +97,13 @@ def get_mlp_model(input_dims, nodes=64, l2_weight=0.01, lr=0.1):
     model.add(Dense(1, kernel_regularizer=regularizers.l2(l2_weight), activation='linear'))
     optimizer = SGD(lr=lr)
     model.compile(optimizer=optimizer,
-                loss='squared_hinge',
+                loss='binary_crossentropy',
                 metrics=['accuracy'])
     return model
+
+def redef_accuracy(y_true, y_pred):
+    return K.mean(K.equal(y_true/2. + 1, K.round(y_pred/2. + 1)), axis=-1)
+
 
 if __name__ == "__main__":
     main(sys.argv[1:])
