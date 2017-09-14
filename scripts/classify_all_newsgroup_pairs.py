@@ -21,6 +21,8 @@ from keras.optimizers import SGD
 from keras import regularizers
 from keras.initializers import Zeros, Ones, RandomNormal, RandomUniform, TruncatedNormal, Orthogonal, Identity, lecun_uniform, glorot_normal, glorot_uniform, he_normal, lecun_normal, he_uniform
 from keras import backend as K
+from keras.utils.np_utils import to_categorical
+from keras.losses import hinge, squared_hinge
 
 ## All categories in the 20 newsgroups data.
 cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
@@ -31,7 +33,7 @@ cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
  'talk.politics.mideast', 'talk.politics.misc', 'talk.religion.misc']
 
 def main(args):
-    scorer = make_scorer(f1_score)
+    scorer = make_scorer(my_scorer)
     vectorizer = Vectorizer()
 
     early_stopping = EarlyStopping(monitor='val_loss', patience=1)
@@ -50,6 +52,7 @@ def main(args):
             ## Put targets in the range -1 to 1 instead of 0/1
             binary_targets = newsgroups_train.target
             class_targets = newsgroups_train.target * 2 - 1
+            cat_targets = to_categorical(binary_targets)
             #targets = newsgroups_train.target * 2 - 1
 
             print("Classifying %s vs. %s" % (cat1, cat2))
@@ -57,20 +60,28 @@ def main(args):
             ## Get NN performance
             print("Classifying with svm-like (no hidden layer) neural network:")
             #model = get_model(vectors.shape[1])
-            sp_model = KerasClassifier(build_fn=get_svmlike_model, input_dims=vectors.shape[1], l2_weight=0.01, epochs=50, validation_split=0.2)
+            sp_model = KerasClassifier(build_fn=get_svmlike_model,
+                input_dims=vectors.shape[1],
+                l2_weight=0.01,
+                epochs=50,
+                validation_split=0.2,
+                batch_size=32)
 
             #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
-            param_grid={'l2_weight':[0.001,0.01], 'lr':[0.001,0.01]}
+            param_grid={'l2_weight':[0.001], 'lr':[0.1]}
             clf = GridSearchCV(sp_model, param_grid, scoring=scorer)
             clf.fit(vectors.toarray(), class_targets)
             print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
 
+            ####################################################################
+            # Below here is the actual svm
+            ####################################################################
             print("Classifying with linear svm:")
             max_score = max_c = 0
             params = {'C':[0.01, 0.1, 1.0, 10.0, 100]}
             svc = svm.LinearSVC()
             clf = GridSearchCV(svc, params, scoring=scorer)
-            clf.fit(vectors, targets)
+            clf.fit(vectors, binary_targets)
             print("Best SVM performance was %f with c=%f" % (clf.best_score_, clf.best_params_['C']))
 
             sys.exit(-1)
@@ -87,8 +98,8 @@ def get_svmlike_model(input_dims, l2_weight=0.01, lr=0.1, initializer=glorot_uni
     #model = Model(input=inputs, outputs=predictions)``
     optimizer = SGD(lr=lr)
     model.compile(optimizer=optimizer,
-                loss='hinge',
-                metrics=['accuracy'])
+                loss=my_hinge,
+                metrics=['mae'])
     return model
 
 def get_mlp_model(input_dims, nodes=64, l2_weight=0.01, lr=0.1):
@@ -104,6 +115,16 @@ def get_mlp_model(input_dims, nodes=64, l2_weight=0.01, lr=0.1):
 def redef_accuracy(y_true, y_pred):
     return K.mean(K.equal(y_true/2. + 1, K.round(y_pred/2. + 1)), axis=-1)
 
+def my_hinge(y_true, y_pred):
+    if K.min(y_true) == 0:
+        hinge_true = y_true * 2 - 1
+    else:
+        hinge_true = y_true
+
+    return squared_hinge(hinge_true, y_pred[:,0])
+
+def my_scorer(y_true, y_pred):
+    return f1_score(y_true, y_pred)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
