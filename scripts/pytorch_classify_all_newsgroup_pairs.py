@@ -1,0 +1,114 @@
+#!/usr/bin/env python
+
+import sys
+import numpy as np
+
+## Scikit-learn imports (for svm training and data manipulation)
+from sklearn.datasets import fetch_20newsgroups
+from sklearn.feature_extraction.text import CountVectorizer as Vectorizer
+from sklearn import svm
+from sklearn.metrics import f1_score, recall_score, precision_score, accuracy_score, make_scorer
+from sklearn.model_selection import cross_val_score
+from sklearn.model_selection import GridSearchCV
+from sklearn.preprocessing import StandardScaler
+
+## pytorch imports
+import torch
+from torch.autograd import Variable
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+
+## All categories in the 20 newsgroups data.
+cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
+ 'comp.sys.ibm.pc.hardware', 'comp.sys.mac.hardware', 'comp.windows.x',
+ 'misc.forsale', 'rec.autos', 'rec.motorcycles', 'rec.sport.baseball',
+ 'rec.sport.hockey', 'sci.crypt', 'sci.electronics', 'sci.med',
+ 'sci.space', 'soc.religion.christian', 'talk.politics.guns',
+ 'talk.politics.mideast', 'talk.politics.misc', 'talk.religion.misc']
+
+def main(args):
+    scorer = make_scorer(my_scorer)
+    vectorizer = Vectorizer()
+    epochs = 50
+
+    for cat1ind in range(len(cats)-1):
+        cat1 = cats[cat1ind]
+        for cat2ind in range(cat1ind+1,len(cats)):
+            cat2 = cats[cat2ind]
+            subcats = [cat1, cat2]
+            newsgroups_train = fetch_20newsgroups(subset='train', remove=('headers', 'footers', 'quotes'), categories=subcats)
+            vectors = vectorizer.fit_transform(newsgroups_train.data)
+            #vectors = vectors.toarray()
+            scaler = StandardScaler(with_mean=False)
+            print(scaler.fit(vectors))
+            ## Doesn't seem to matter
+            scaled_vectors = scaler.transform(vectors)
+            ## Put targets in the range -1 to 1 instead of 0/1
+            binary_targets = newsgroups_train.target
+            class_targets = newsgroups_train.target * 2 - 1
+            cat_targets = to_categorical(binary_targets)
+            #targets = newsgroups_train.target * 2 - 1
+
+            print("Classifying %s vs. %s" % (cat1, cat2))
+
+            ## Get NN performance
+            print("Classifying with svm-like (no hidden layer) neural network:")
+            svmlike_model = get_svmlike_model(vectors.shape[1])
+            for epoch in epochs:
+                
+
+            #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
+            param_grid={'l2_weight':[0.001], 'lr':[0.1]}
+            clf = GridSearchCV(sp_model, param_grid, scoring=scorer)
+            clf.fit(vectors.toarray(), class_targets)
+            print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
+
+            ####################################################################
+            # Below here is the actual svm
+            ####################################################################
+            print("Classifying with linear svm:")
+            max_score = max_c = 0
+            params = {'C':[0.01, 0.1, 1.0, 10.0, 100]}
+            svc = svm.LinearSVC()
+            clf = GridSearchCV(svc, params, scoring=scorer)
+            clf.fit(vectors, binary_targets)
+            print("Best SVM performance was %f with c=%f" % (clf.best_score_, clf.best_params_['C']))
+
+            sys.exit(-1)
+
+class SvmlikeModel(nn.Module):
+    def __init__(self, input_dims, lr=0.1):
+        super(SvmlikeModel, self).__init__()
+        self.fc1 = nn.Linear(input_dims, 1)
+        self.optimizer = optim.SGD(self.parameters, lr=lr)
+
+def get_svmlike_model(input_dims, l2_weight=0.01, lr=0.1, initializer=glorot_uniform()):
+    return SvmlikeModel(input_dims, lr)
+
+def get_mlp_model(input_dims, nodes=64, l2_weight=0.01, lr=0.1):
+    model = Sequential()
+    model.add(Dense(nodes, input_dim=input_dims, activation='relu'))
+    model.add(Dense(1, kernel_regularizer=regularizers.l2(l2_weight), activation='linear'))
+    optimizer = SGD(lr=lr)
+    model.compile(optimizer=optimizer,
+                loss='binary_crossentropy',
+                metrics=['accuracy'])
+    return model
+
+def redef_accuracy(y_true, y_pred):
+    return K.mean(K.equal(y_true/2. + 1, K.round(y_pred/2. + 1)), axis=-1)
+
+def my_hinge(y_true, y_pred):
+    if K.min(y_true) == 0:
+        hinge_true = y_true * 2 - 1
+    else:
+        hinge_true = y_true
+
+    return squared_hinge(hinge_true, y_pred[:,0])
+
+def my_scorer(y_true, y_pred):
+    return f1_score(y_true, y_pred)
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
