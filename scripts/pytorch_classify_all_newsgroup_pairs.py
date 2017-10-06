@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import sys
-import numpy as np
+#import numpy as np
 
 ## Scikit-learn imports (for svm training and data manipulation)
 from sklearn.datasets import fetch_20newsgroups
@@ -13,11 +13,17 @@ from sklearn.model_selection import GridSearchCV
 from sklearn.preprocessing import StandardScaler
 
 ## pytorch imports
-import torch
-from torch.autograd import Variable
+from torch import Tensor
+#from torch.autograd import Variable
 import torch.nn as nn
-import torch.nn.functional as F
+#import torch.nn.functional as F
 import torch.optim as optim
+from torchtext import data
+from torch.utils.data import TensorDataset,DataLoader
+from torch.autograd import Variable
+from torch.nn import SoftMarginLoss
+
+import numpy as np
 
 ## All categories in the 20 newsgroups data.
 cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
@@ -31,6 +37,7 @@ def main(args):
     scorer = make_scorer(my_scorer)
     vectorizer = Vectorizer()
     epochs = 50
+    valid_pct = 0.2
 
     for cat1ind in range(len(cats)-1):
         cat1 = cats[cat1ind]
@@ -39,6 +46,8 @@ def main(args):
             subcats = [cat1, cat2]
             newsgroups_train = fetch_20newsgroups(subset='train', remove=('headers', 'footers', 'quotes'), categories=subcats)
             vectors = vectorizer.fit_transform(newsgroups_train.data)
+
+
             #vectors = vectors.toarray()
             scaler = StandardScaler(with_mean=False)
             print(scaler.fit(vectors))
@@ -47,22 +56,60 @@ def main(args):
             ## Put targets in the range -1 to 1 instead of 0/1
             binary_targets = newsgroups_train.target
             class_targets = newsgroups_train.target * 2 - 1
-            cat_targets = to_categorical(binary_targets)
+            #cat_targets = to_categorical(binary_targets)
             #targets = newsgroups_train.target * 2 - 1
+            train_X_tensor = Tensor(scaled_vectors.toarray())
+            train_y_tensor = Tensor(class_targets)
+            pyt_data = TensorDataset(train_X_tensor,  train_y_tensor)
+            data_loader = DataLoader(pyt_data, batch_size=32, shuffle=True)
 
+            (train_iter,) = data.Iterator.splits((pyt_data,), batch_size=32,
+                device=-1, sort = False,  sort_key=lambda x: x.sum() )
             print("Classifying %s vs. %s" % (cat1, cat2))
+            end_train_range = int((1-valid_pct) * vectors.shape[0])
+            print("Training on first %f of data, %d instances" % (100*(1-valid_pct), end_train_range))
 
             ## Get NN performance
             print("Classifying with svm-like (no hidden layer) neural network:")
-            svmlike_model = get_svmlike_model(vectors.shape[1])
-            for epoch in epochs:
-                
+            svmlike_model = SvmlikeModel(vectors.shape[1], lr=0.01)
+            iterations = 0
+            for epoch in range(epochs):
+            #     # batches:
+            #     train_iter.init_epoch()
+            #     for batch_idx, batch in enumerate(train_iter):
+            #         svmlike_model.train()
+            #         answer = svmlike_model(batch)
+            #         loss = svmlike_model.criterion()(answer, batch.label)
+            #         loss.backward()
+            #         svmlike_model.update()
+            #
+            # single nistance at a time:
+                epoch_loss = 0
+                for item_ind in range(end_train_range):
+                    item = pyt_data[item_ind]
+                    svmlike_model.train();
+                    iterations += 1
+                    answer = svmlike_model(Variable(item[0]))
+                    loss = svmlike_model.criterion(answer,  Variable(Tensor((item[1],))))
+                    if np.isnan(loss.data[0]):
+                        sys.stderr.write("Training example %d has nan loss" % (item_ind))
+                    epoch_loss += loss
+                    loss.backward();
+                    svmlike_model.update()
+                    #print("Epoch %d with loss %f and cumulative loss %f" % (epoch, loss.data[0], epoch_loss.data[0]))
+
+                valid_batch = pyt_data[end_train_range:][0]
+                valid_answer = svmlike_model(Variable(valid_batch))
+                valid_loss = svmlike_model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
+                valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
+                print("Epoch %d with training loss %f and validation loss %f and validation f1=%f" %
+                    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1))
 
             #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
-            param_grid={'l2_weight':[0.001], 'lr':[0.1]}
-            clf = GridSearchCV(sp_model, param_grid, scoring=scorer)
-            clf.fit(vectors.toarray(), class_targets)
-            print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
+            #param_grid={'l2_weight':[0.001], 'lr':[0.1]}
+            #clf = GridSearchCV(sp_model, param_grid, scoring=scorer)
+            #clf.fit(vectors.toarray(), class_targets)
+            #print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
 
             ####################################################################
             # Below here is the actual svm
@@ -81,31 +128,22 @@ class SvmlikeModel(nn.Module):
     def __init__(self, input_dims, lr=0.1):
         super(SvmlikeModel, self).__init__()
         self.fc1 = nn.Linear(input_dims, 1)
-        self.optimizer = optim.SGD(self.parameters, lr=lr)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.loss = SoftMarginLoss()
 
-def get_svmlike_model(input_dims, l2_weight=0.01, lr=0.1, initializer=glorot_uniform()):
-    return SvmlikeModel(input_dims, lr)
+    def train(self):
+        nn.Module.train(self)
+        self.optimizer.zero_grad()
 
-def get_mlp_model(input_dims, nodes=64, l2_weight=0.01, lr=0.1):
-    model = Sequential()
-    model.add(Dense(nodes, input_dim=input_dims, activation='relu'))
-    model.add(Dense(1, kernel_regularizer=regularizers.l2(l2_weight), activation='linear'))
-    optimizer = SGD(lr=lr)
-    model.compile(optimizer=optimizer,
-                loss='binary_crossentropy',
-                metrics=['accuracy'])
-    return model
+    def forward(self, batch):
+        x = self.fc1(batch)
+        return x
 
-def redef_accuracy(y_true, y_pred):
-    return K.mean(K.equal(y_true/2. + 1, K.round(y_pred/2. + 1)), axis=-1)
+    def criterion(self, system, actual):
+        return self.loss(system, actual)
 
-def my_hinge(y_true, y_pred):
-    if K.min(y_true) == 0:
-        hinge_true = y_true * 2 - 1
-    else:
-        hinge_true = y_true
-
-    return squared_hinge(hinge_true, y_pred[:,0])
+    def update(self):
+        self.optimizer.step()
 
 def my_scorer(y_true, y_pred):
     return f1_score(y_true, y_pred)
