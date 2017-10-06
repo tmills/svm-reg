@@ -73,6 +73,11 @@ def main(args):
             print("Classifying with svm-like (no hidden layer) neural network:")
             svmlike_model = SvmlikeModel(vectors.shape[1], lr=0.01)
             iterations = 0
+            valid_batch = pyt_data[end_train_range:][0]
+            valid_answer = svmlike_model(Variable(valid_batch))
+            valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
+            print("Validation accuracy before doing any training: %f" % (valid_acc))
+
             for epoch in range(epochs):
             #     # batches:
             #     train_iter.init_epoch()
@@ -101,9 +106,10 @@ def main(args):
                 valid_batch = pyt_data[end_train_range:][0]
                 valid_answer = svmlike_model(Variable(valid_batch))
                 valid_loss = svmlike_model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
-                valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
-                print("Epoch %d with training loss %f and validation loss %f and validation f1=%f" %
-                    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1))
+                valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
+                valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
+                print("Epoch %d with training loss %f and validation loss %f, f1=%f, acc=%f" %
+                    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1, valid_acc))
 
             #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
             #param_grid={'l2_weight':[0.001], 'lr':[0.1]}
@@ -120,7 +126,7 @@ def main(args):
             svc = svm.LinearSVC()
             clf = GridSearchCV(svc, params, scoring=scorer)
             clf.fit(vectors, binary_targets)
-            print("Best SVM performance was %f with c=%f" % (clf.best_score_, clf.best_params_['C']))
+            print("Best SVM performance was acc=%f with c=%f" % (clf.best_score_, clf.best_params_['C']))
 
             sys.exit(-1)
 
@@ -146,7 +152,7 @@ class SvmlikeModel(nn.Module):
         self.optimizer.step()
 
 def my_scorer(y_true, y_pred):
-    return f1_score(y_true, y_pred)
+    return accuracy_score(y_true, y_pred)
 
 if __name__ == "__main__":
     main(sys.argv[1:])
