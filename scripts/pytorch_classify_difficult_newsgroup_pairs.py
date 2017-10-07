@@ -26,12 +26,7 @@ from torch.nn import SoftMarginLoss
 import numpy as np
 
 ## All categories in the 20 newsgroups data.
-cats = ['alt.atheism', 'comp.graphics', 'comp.os.ms-windows.misc',
- 'comp.sys.ibm.pc.hardware', 'comp.sys.mac.hardware', 'comp.windows.x',
- 'misc.forsale', 'rec.autos', 'rec.motorcycles', 'rec.sport.baseball',
- 'rec.sport.hockey', 'sci.crypt', 'sci.electronics', 'sci.med',
- 'sci.space', 'soc.religion.christian', 'talk.politics.guns',
- 'talk.politics.mideast', 'talk.politics.misc', 'talk.religion.misc']
+cats = ['alt.atheism', 'soc.religion.christian', 'talk.religion.misc']
 
 def main(args):
     scorer = make_scorer(my_scorer)
@@ -50,7 +45,7 @@ def main(args):
 
             #vectors = vectors.toarray()
             scaler = StandardScaler(with_mean=False)
-            print(scaler.fit(vectors))
+            scaler.fit(vectors)
             ## Doesn't seem to matter
             scaled_vectors = scaler.transform(vectors)
             ## Put targets in the range -1 to 1 instead of 0/1
@@ -67,7 +62,7 @@ def main(args):
                 device=-1, sort = False,  sort_key=lambda x: x.sum() )
             print("Classifying %s vs. %s" % (cat1, cat2))
             end_train_range = int((1-valid_pct) * vectors.shape[0])
-            print("Training on first %f of data, %d instances" % (100*(1-valid_pct), end_train_range))
+            #print("Training on first %f of data, %d instances" % (100*(1-valid_pct), end_train_range))
 
             ## Get NN performance
             print("Classifying with svm-like (no hidden layer) neural network:")
@@ -75,8 +70,8 @@ def main(args):
             iterations = 0
             valid_batch = pyt_data[end_train_range:][0]
             valid_answer = svmlike_model(Variable(valid_batch))
-            valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
-            print("Validation accuracy before doing any training: %f" % (valid_acc))
+            prev_valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
+            #print("Validation accuracy before doing any training: %f" % (valid_acc))
 
             for epoch in range(epochs):
             #     # batches:
@@ -89,6 +84,7 @@ def main(args):
             #         svmlike_model.update()
             #
             # single nistance at a time:
+                nan = False
                 epoch_loss = 0
                 for item_ind in range(end_train_range):
                     item = pyt_data[item_ind]
@@ -97,19 +93,26 @@ def main(args):
                     answer = svmlike_model(Variable(item[0]))
                     loss = svmlike_model.criterion(answer,  Variable(Tensor((item[1],))))
                     if np.isnan(loss.data[0]):
-                        sys.stderr.write("Training example %d has nan loss" % (item_ind))
+                        sys.stderr.write("Training example %d at epoch %d has nan loss\n" % (item_ind, epoch))
+                        nan = True
+                        break
+
                     epoch_loss += loss
                     loss.backward();
                     svmlike_model.update()
                     #print("Epoch %d with loss %f and cumulative loss %f" % (epoch, loss.data[0], epoch_loss.data[0]))
 
+                if nan:
+                    break
                 valid_batch = pyt_data[end_train_range:][0]
                 valid_answer = svmlike_model(Variable(valid_batch))
                 valid_loss = svmlike_model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
                 valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
                 valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
-                print("Epoch %d with training loss %f and validation loss %f, f1=%f, acc=%f" %
-                    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1, valid_acc))
+                #print("Epoch %d with training loss %f and validation loss %f, f1=%f, acc=%f" %
+                #    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1, prev_valid_acc))
+                prev_valid_acc = valid_acc
+            print("Finished with validation accuracy %f" % (valid_acc))
 
             #score = np.average(cross_val_score(sp_model, vectors.toarray(), newsgroups_train.target, scoring=scorer, n_jobs=1, fit_params=dict(verbose=1, callbacks=[early_stopping])))
             #param_grid={'l2_weight':[0.001], 'lr':[0.1]}
@@ -128,7 +131,7 @@ def main(args):
             clf.fit(vectors, binary_targets)
             print("Best SVM performance was acc=%f with c=%f" % (clf.best_score_, clf.best_params_['C']))
 
-            sys.exit(-1)
+            #sys.exit(-1)
 
 class SvmlikeModel(nn.Module):
     def __init__(self, input_dims, lr=0.1):
