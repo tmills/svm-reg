@@ -22,6 +22,7 @@ from torchtext import data
 from torch.utils.data import TensorDataset,DataLoader
 from torch.autograd import Variable
 from torch.nn import SoftMarginLoss
+import torch
 
 import numpy as np
 
@@ -116,7 +117,7 @@ def main(args):
                             break
 
                         valid_batch = pyt_data[end_train_range:][0]
-                        valid_answer = model(Variable(valid_batch))
+                        valid_answer = model(Variable(valid_batch))[:,0]
                         valid_loss = model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
                         valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
                         valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
@@ -174,7 +175,7 @@ class SvmlikeModel(SimpleModel):
     def __init__(self, input_dims, lr=0.1):
         super(SvmlikeModel, self).__init__()
         self.fc1 = nn.Linear(input_dims, 1)
-        self.loss = SoftMarginLoss()
+        self.loss = HingeLoss(c=0.01)
         self.optimizer = optim.SGD(self.parameters(), lr=lr)
 
     def forward(self, batch):
@@ -189,7 +190,7 @@ class ExtendedModel(SimpleModel):
             self.fc1.weight[0,:].data = init.data
         self.relu = nn.ReLU()
         self.output = nn.Linear(hidden_dims, 1)
-        self.loss = SoftMarginLoss()
+        self.loss = HingeLoss(c=0.1)
         self.optimizer = optim.SGD(self.parameters(), lr=lr)
 
     def forward(self, batch):
@@ -200,6 +201,20 @@ class ExtendedModel(SimpleModel):
 
 def my_scorer(y_true, y_pred):
     return accuracy_score(y_true, y_pred)
+
+class HingeLoss(nn.Module):
+    def __init__(self, c):
+        super(HingeLoss, self).__init__()
+        self.C = c
+
+    def forward(self, input, target):
+        _assert_no_grad(target)
+        return torch.clamp(self.C - target.dot(input), 0)
+
+def _assert_no_grad(variable):
+    assert not variable.requires_grad, \
+        "nn criterions don't compute the gradient w.r.t. targets - please " \
+        "mark these variables as volatile or not requiring gradients"
 
 if __name__ == "__main__":
     main(sys.argv[1:])
