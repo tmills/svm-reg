@@ -73,21 +73,27 @@ def main(args):
 
             my_lr = default_lr
 
-            for model_ind in range(3):
+            for model_ind in range(4):
                 if model_ind == 0:
                     print("Classifying with svm-like (no hidden layer) neural network:")
                 elif model_ind == 1:
                     print("Classifying with one hidden layer neural network with %d hidden nodes" % (hidden_nodes))
-                else:
-                    print("Classifying with one hidden layer with %d hidden nodes initialized by previous system")
+                elif model_ind == 2:
+                    print("Classifying with one hidden layer with %d hidden nodes initialized by previous system" % (hidden_nodes))
+                elif model_ind == 3:
+                    print("Classifying with one hidden layer with %d hidden nodes initialized and regularized by svm-like system." % (hidden_nodes))
 
                 for try_num in range(5):
+                    reg = False
                     if model_ind == 0:
                         model = SvmlikeModel(vectors.shape[1], lr=my_lr)
                     elif model_ind == 1:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr)
-                    elif model_ind == 2:
+                    elif model_ind >= 2:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr, init=saved_weights)
+                        if model_ind == 3:
+                            reg = True
+                            weight_reg = L2VectorLoss() #torch.nn.PairwiseDistance(p=2)
 
                     valid_answer = model(Variable(valid_batch))
                     valid_acc = prev_valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
@@ -110,6 +116,9 @@ def main(args):
 
                             epoch_loss += loss
                             loss.backward();
+                            if reg:
+                                weight_reg_loss = weight_reg(model.fc1.weight[0,:], saved_weights)
+                                weight_reg_loss.backward()
                             model.update()
                             #print("Epoch %d with loss %f and cumulative loss %f" % (epoch, loss.data[0], epoch_loss.data[0]))
 
@@ -128,7 +137,7 @@ def main(args):
                     if not nan:
                         print("Finished with validation accuracy %f" % (valid_acc))
                         if model_ind == 0:
-                            saved_weights = model.fc1.weight
+                            saved_weights = Variable(model.fc1.weight[0,:].data)
                         break
                     elif try_num+1 < 5:
                         my_lr /= 2.
@@ -188,6 +197,7 @@ class ExtendedModel(SimpleModel):
         self.fc1 = nn.Linear(input_dims, hidden_dims)
         if not init is None:
             self.fc1.weight[0,:].data = init.data
+
         self.relu = nn.ReLU()
         self.output = nn.Linear(hidden_dims, 1)
         self.loss = HingeLoss(c=0.1)
@@ -210,6 +220,15 @@ class HingeLoss(nn.Module):
     def forward(self, input, target):
         _assert_no_grad(target)
         return torch.clamp(self.C - target.dot(input), 0)
+
+class L2VectorLoss(nn.Module):
+    def __init__(self):
+        super(L2VectorLoss, self).__init__()
+
+    def forward(self, input, target):
+        _assert_no_grad(target)
+        #return torch.sqrt( torch.sum( ))
+        return torch.dist(input, target)
 
 def _assert_no_grad(variable):
     assert not variable.requires_grad, \
