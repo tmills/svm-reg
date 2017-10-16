@@ -28,14 +28,22 @@ import numpy as np
 
 ## All categories in the 20 newsgroups data.
 cats = ['alt.atheism', 'soc.religion.christian', 'talk.religion.misc']
+SVM_LIKE=0
+ONE_LAYER=1
+SVM_INIT=2
+SVM_REG=3
 
 def main(args):
     scorer = make_scorer(my_scorer)
     vectorizer = Vectorizer()
-    epochs = 50
+    epochs = 100
     valid_pct = 0.2
-    default_lr = 0.01
-    hidden_nodes = 32
+    default_lr = 0.1
+    hidden_nodes = 128
+    batch_size = 64
+
+    if torch.cuda.is_available():
+        print("CUDA found so processing will be done on the GPU")
 
     for cat1ind in range(len(cats)-1):
         cat1 = cats[cat1ind]
@@ -51,72 +59,85 @@ def main(args):
             scaler.fit(vectors)
             ## Doesn't seem to matter
             scaled_vectors = scaler.transform(vectors)
-            ## Put targets in the range -1 to 1 instead of 0/1
+            ## Target vectors for the SVM:
             binary_targets = newsgroups_train.target
+            ## Put targets in the range -1 to 1 instead of 0/1 for the nn hinge loss
             class_targets = newsgroups_train.target * 2 - 1
-            #cat_targets = to_categorical(binary_targets)
-            #targets = newsgroups_train.target * 2 - 1
+
             train_X_tensor = Tensor(scaled_vectors.toarray())
             train_y_tensor = Tensor(class_targets)
-            pyt_data = TensorDataset(train_X_tensor,  train_y_tensor)
-            data_loader = DataLoader(pyt_data, batch_size=32, shuffle=True)
+            if torch.cuda.is_available():
+                pyt_data = TensorDataset(train_X_tensor.cuda(),  train_y_tensor.cuda())
+            else:
+                pyt_data = TensorDataset(train_X_tensor,  train_y_tensor)
 
-            (train_iter,) = data.Iterator.splits((pyt_data,), batch_size=32,
-                device=-1, sort = False,  sort_key=lambda x: x.sum() )
+
             print("Classifying %s vs. %s" % (cat1, cat2))
             end_train_range = int((1-valid_pct) * vectors.shape[0])
-            #print("Training on first %f of data, %d instances" % (100*(1-valid_pct), end_train_range))
 
             ## Get NN performance
             iterations = 0
-            valid_batch = pyt_data[end_train_range:][0]
+            valid_X = pyt_data[end_train_range:][0]
+            valid_y = train_y_tensor[end_train_range:]
 
             my_lr = default_lr
 
             for model_ind in range(4):
-                if model_ind == 0:
+                if model_ind == SVM_LIKE:
                     print("Classifying with svm-like (no hidden layer) neural network:")
-                elif model_ind == 1:
+                elif model_ind == ONE_LAYER:
                     print("Classifying with one hidden layer neural network with %d hidden nodes" % (hidden_nodes))
-                elif model_ind == 2:
+                elif model_ind == SVM_INIT:
                     print("Classifying with one hidden layer with %d hidden nodes initialized by previous system" % (hidden_nodes))
-                elif model_ind == 3:
+                elif model_ind == SVM_REG:
                     print("Classifying with one hidden layer with %d hidden nodes initialized and regularized by svm-like system." % (hidden_nodes))
 
                 for try_num in range(5):
                     reg = False
-                    if model_ind == 0:
+                    if model_ind == SVM_LIKE:
                         model = SvmlikeModel(vectors.shape[1], lr=my_lr)
-                    elif model_ind == 1:
+                        svmlike_model = model
+                    elif model_ind == ONE_LAYER:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr)
-                    elif model_ind >= 2:
+                    elif model_ind == SVM_INIT:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr, init=saved_weights)
-                        if model_ind == 3:
-                            reg = True
-                            weight_reg = L2VectorLoss() #torch.nn.PairwiseDistance(p=2)
+                    else:
+                        model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr, init=saved_weights)
+                        reg = True
+                        weight_reg = L2VectorLoss()
 
-                    valid_answer = model(Variable(valid_batch))
-                    valid_acc = prev_valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
+                    ## Move the model to the GPU:
+                    if torch.cuda.is_available():
+                        model.cuda()
+
+                    valid_answer = model(Variable(valid_X)).cpu()
+                    valid_acc = prev_valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), valid_y.numpy())
                     nan = False
 
                     for epoch in range(epochs):
+                        #print("Epoch %d" % (epoch))
                     # single instance at a time:
                         nan = False
                         epoch_loss = 0
-                        for item_ind in range(end_train_range):
-                            item = pyt_data[item_ind]
+                        for batch_ind in range(end_train_range // batch_size):
+                            start_ind = batch_ind * batch_size
+                            end_ind = min(start_ind+batch_size, end_train_range)
+                            item = pyt_data[start_ind:end_ind]
                             model.train();
                             iterations += 1
                             answer = model(Variable(item[0]))
-                            loss = model.criterion(answer,  Variable(Tensor((item[1],))))
+                            if epoch == 0 and model_ind == SVM_INIT:
+                                svm_answer = svmlike_model(Variable(item[0]))
+
+                            loss = model.criterion(answer[:,0],  Variable(item[1]))
                             if np.isnan(loss.data[0]):
-                                sys.stderr.write("Training example %d at epoch %d has nan loss\n" % (item_ind, epoch))
+                                sys.stderr.write("Training batch %d at epoch %d has nan loss\n" % (batch_ind, epoch))
                                 nan = True
                                 break
 
                             epoch_loss += loss
                             loss.backward();
-                            if reg:
+                            if reg and epoch > 0:
                                 weight_reg_loss = weight_reg(model.fc1.weight[0,:], saved_weights)
                                 weight_reg_loss.backward()
                             model.update()
@@ -128,10 +149,10 @@ def main(args):
                         valid_batch = pyt_data[end_train_range:][0]
                         valid_answer = model(Variable(valid_batch))[:,0]
                         valid_loss = model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
-                        valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
-                        valid_acc = accuracy_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy())
-                        #print("Epoch %d with training loss %f and validation loss %f, f1=%f, acc=%f" %
-                        #    (epoch, epoch_loss.data[0], valid_loss.data[0], valid_f1, prev_valid_acc))
+                        #valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
+                        valid_acc = accuracy_score(np.sign(valid_answer.cpu().data.numpy()), valid_y.numpy())
+                        if epoch % 10 == 0: print("Epoch %d with training loss %f and validation loss %f, acc=%f" %
+                            (epoch, epoch_loss.data[0], valid_loss.data[0], prev_valid_acc))
                         prev_valid_acc = valid_acc
 
                     if not nan:
@@ -161,9 +182,11 @@ def main(args):
             svc = svm.LinearSVC()
             clf = GridSearchCV(svc, params, scoring=scorer)
             clf.fit(vectors, binary_targets)
-            print("Best SVM performance was acc=%f with c=%f" % (clf.best_score_, clf.best_params_['C']))
-
-            #sys.exit(-1)
+            print("Best SVM performance was with c=%f" % (clf.best_params_['C']))
+            svc = svm.LinearSVC(C=clf.best_params_['C'])
+            svc.fit(scaled_vectors[:end_train_range], binary_targets[:end_train_range])
+            score = svc.score(scaled_vectors[end_train_range:], binary_targets[end_train_range:])
+            print("SVM score with standard validation set is %f" % (score))
 
 class SimpleModel(nn.Module):
     def train(self):
@@ -195,17 +218,20 @@ class ExtendedModel(SimpleModel):
     def __init__(self, input_dims, hidden_dims, lr=0.1, init=None):
         super(ExtendedModel, self).__init__()
         self.fc1 = nn.Linear(input_dims, hidden_dims)
+        self.output = nn.Linear(hidden_dims, 1)
         if not init is None:
-            self.fc1.weight[0,:].data = init.data
+            self.fc1.weight[0,:].data.zero_()
+            self.fc1.weight[0,:].data.add_(init.data.cpu())
+            self.output.weight.data.zero_()
+            self.output.weight.data[0,0] = 1.
 
         self.relu = nn.ReLU()
-        self.output = nn.Linear(hidden_dims, 1)
         self.loss = HingeLoss(c=0.1)
         self.optimizer = optim.SGD(self.parameters(), lr=lr)
 
     def forward(self, batch):
         x = self.fc1(batch)
-        x = self.relu(x)
+        #x = self.relu(x)
         x = self.output(x)
         return x
 
@@ -213,22 +239,23 @@ def my_scorer(y_true, y_pred):
     return accuracy_score(y_true, y_pred)
 
 class HingeLoss(nn.Module):
-    def __init__(self, c):
+    def __init__(self, c=1.0):
         super(HingeLoss, self).__init__()
         self.C = c
 
     def forward(self, input, target):
         _assert_no_grad(target)
-        return torch.clamp(self.C - target.dot(input), 0)
+        return torch.mean(torch.clamp(self.C - target * input, 0))
 
 class L2VectorLoss(nn.Module):
     def __init__(self):
         super(L2VectorLoss, self).__init__()
+        self.epsilon = 1e-3
 
     def forward(self, input, target):
         _assert_no_grad(target)
         #return torch.sqrt( torch.sum( ))
-        return torch.dist(input, target)
+        return torch.dist(input, target) + self.epsilon
 
 def _assert_no_grad(variable):
     assert not variable.requires_grad, \
