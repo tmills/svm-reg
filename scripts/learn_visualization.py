@@ -28,10 +28,9 @@ cats = ['alt.atheism', 'soc.religion.christian', 'talk.religion.misc']
 
 def main(args):
     vectorizer = Vectorizer()
-    epochs = 100
+    epochs = 500
     valid_pct = 0.2
-    default_lr = 0.1
-    hidden_nodes = 32
+    default_lr = 10.0
     batch_size = 64
     MAX_TRIES = 5
 
@@ -43,6 +42,7 @@ def main(args):
         for cat2ind in range(cat1ind+1,len(cats)):
             cat2 = cats[cat2ind]
             subcats = [cat1, cat2]
+            print("Classifying %s vs. %s" % (cat1, cat2))
 
             newsgroups_train = fetch_20newsgroups(subset='train', remove=('headers', 'footers', 'quotes'), categories=subcats)
             vectors = vectorizer.fit_transform(newsgroups_train.data)
@@ -101,19 +101,23 @@ def main(args):
                                 print("Every learning rate resulted in NaN. Quitting.")
                             break
 
-                        ## Compute validation loss:
-                        valid_batch = pyt_data[end_train_range:][0]
-                        valid_answer = model(Variable(valid_batch))
-                        valid_loss = model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
-                        #valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
-                        #valid_acc = accuracy_score(np.sign(valid_answer.cpu().data.numpy()), valid_y.numpy())
-                        if epoch % 10 == 0: print("Epoch %d with training loss %f and validation loss %f" %
-                            (epoch, epoch_loss.data[0], valid_loss.data[0]))
-
+                    ## Compute validation loss:
+                    valid_batch = pyt_data[end_train_range:][0]
+                    valid_answer = model(Variable(valid_batch))
+                    valid_loss = model.criterion(valid_answer, Variable(pyt_data[end_train_range:][1]))
+                    #valid_f1 = f1_score(np.sign(valid_answer.data.numpy()), pyt_data[end_train_range:][1].numpy(), pos_label=-1)
+                    #valid_acc = accuracy_score(np.sign(valid_answer.cpu().data.numpy()), valid_y.numpy())
+                    if epoch % 10 == 0: print("Epoch %d with training loss %f and validation loss %f" %
+                        (epoch, epoch_loss.data[0], valid_loss.data[0]))
 
                     if nan:
                         break
 
+                if not nan:
+                    ## If we got through the epochs without nan then save the model
+                    ## and don't take any more tries:
+                    
+                    break
 
 class SimpleModel(nn.Module):
     def train(self):
