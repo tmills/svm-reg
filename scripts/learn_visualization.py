@@ -47,7 +47,6 @@ def main(args):
             newsgroups_train = fetch_20newsgroups(subset='train', remove=('headers', 'footers', 'quotes'), categories=subcats)
             vectors = vectorizer.fit_transform(newsgroups_train.data)
 
-
             #vectors = vectors.toarray()
             scaler = StandardScaler(with_mean=False)
             scaler.fit(vectors)
@@ -116,7 +115,7 @@ def main(args):
                 if not nan:
                     ## If we got through the epochs without nan then save the model
                     ## and don't take any more tries:
-                    
+
                     break
 
 class SimpleModel(nn.Module):

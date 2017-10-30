@@ -39,6 +39,8 @@ def main(args):
     epochs = 100
     valid_pct = 0.2
     default_lr = 0.1
+    default_c = 0.1
+    default_decay = 0.0
     hidden_nodes = 128
     batch_size = 64
 
@@ -77,12 +79,33 @@ def main(args):
 
             ## Get NN performance
             iterations = 0
+            train_X = pyt_data[:end_train_range][0]
+            train_y = train_y_tensor[:end_train_range]
             valid_X = pyt_data[end_train_range:][0]
             valid_y = train_y_tensor[end_train_range:]
 
             my_lr = default_lr
 
-            for model_ind in range(4):
+            ####################################################################
+            # Here is the actual svm
+            ####################################################################
+            print("Classifying with linear svm:")
+            max_score = max_c = 0
+            params = {'C':[0.01, 0.1, 1.0, 10.0, 100]}
+            svc = svm.LinearSVC()
+            clf = GridSearchCV(svc, params, scoring=scorer)
+            clf.fit(vectors, binary_targets)
+            print("Best SVM performance was with c=%f" % (clf.best_params_['C']))
+            svc = svm.LinearSVC(C=clf.best_params_['C'])
+            svc.fit(scaled_vectors[:end_train_range], binary_targets[:end_train_range])
+            score = svc.score(scaled_vectors[end_train_range:], binary_targets[end_train_range:])
+            print("** SVM score with standard validation set is **%f**" % (score))
+
+
+            ####################################################################
+            # Here are the different NN models
+            ####################################################################
+            for model_ind in (SVM_LIKE,):
                 if model_ind == SVM_LIKE:
                     print("Classifying with svm-like (no hidden layer) neural network:")
                 elif model_ind == ONE_LAYER:
@@ -93,9 +116,10 @@ def main(args):
                     print("Classifying with one hidden layer with %d hidden nodes initialized and regularized by svm-like system." % (hidden_nodes))
 
                 for try_num in range(5):
-                    reg = False
+                    init_reg = False
+                    weight_reg = L2VectorLoss()
                     if model_ind == SVM_LIKE:
-                        model = SvmlikeModel(vectors.shape[1], lr=my_lr)
+                        model = SvmlikeModel(vectors.shape[1], lr=my_lr, c=default_c, decay=default_decay)
                         svmlike_model = model
                     elif model_ind == ONE_LAYER:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr)
@@ -103,8 +127,8 @@ def main(args):
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr, init=saved_weights)
                     else:
                         model = ExtendedModel(vectors.shape[1], hidden_nodes, lr=my_lr, init=saved_weights)
-                        reg = True
-                        weight_reg = L2VectorLoss()
+                        init_reg = True
+                        init_weight_reg = L2VectorLoss()
 
                     ## Move the model to the GPU:
                     if torch.cuda.is_available():
@@ -119,10 +143,14 @@ def main(args):
                     # single instance at a time:
                         nan = False
                         epoch_loss = 0
+                        ## Shuffle data:
+                        shuffle = torch.randperm(end_train_range)
+                        train_X = train_X[shuffle]
+                        train_y = train_y[shuffle]
                         for batch_ind in range(end_train_range // batch_size):
                             start_ind = batch_ind * batch_size
                             end_ind = min(start_ind+batch_size, end_train_range)
-                            item = pyt_data[start_ind:end_ind]
+                            item = (train_X[start_ind:end_ind], train_y[start_ind:end_ind])
                             model.train();
                             iterations += 1
                             answer = model(Variable(item[0]))
@@ -136,10 +164,18 @@ def main(args):
                                 break
 
                             epoch_loss += loss
-                            loss.backward();
-                            if reg and epoch > 0:
-                                weight_reg_loss = weight_reg(model.fc1.weight[0,:], saved_weights)
-                                weight_reg_loss.backward()
+                            loss.backward()
+
+                            ## If we're on the model that regularizes towards the initial conditions then run
+                            ## that loss function:
+                            if init_reg and epoch > 0:
+                                init_weight_reg_loss = init_weight_reg(model.fc1.weight[0,:], saved_weights)
+                                init_weight_reg_loss.backward()
+
+                            ## Always do L2 weight regularization:
+                            #weight_reg_loss = weight_reg(model.fc1.weight, torch.zeros(model.fc1.weight.size()))
+                            #weight_reg_loss.backward()
+
                             model.update()
                             #print("Epoch %d with loss %f and cumulative loss %f" % (epoch, loss.data[0], epoch_loss.data[0]))
 
@@ -156,7 +192,7 @@ def main(args):
                         prev_valid_acc = valid_acc
 
                     if not nan:
-                        print("Finished with validation accuracy %f" % (valid_acc))
+                        print("** Finished with validation accuracy **%f**" % (valid_acc))
                         if model_ind == 0:
                             saved_weights = Variable(model.fc1.weight[0,:].data)
                         break
@@ -173,20 +209,6 @@ def main(args):
             #clf.fit(vectors.toarray(), class_targets)
             #print("\nScore of nn cross-validation=%f with parameters=%s" % (clf.best_score_, clf.best_params_))
 
-            ####################################################################
-            # Below here is the actual svm
-            ####################################################################
-            print("Classifying with linear svm:")
-            max_score = max_c = 0
-            params = {'C':[0.01, 0.1, 1.0, 10.0, 100]}
-            svc = svm.LinearSVC()
-            clf = GridSearchCV(svc, params, scoring=scorer)
-            clf.fit(vectors, binary_targets)
-            print("Best SVM performance was with c=%f" % (clf.best_params_['C']))
-            svc = svm.LinearSVC(C=clf.best_params_['C'])
-            svc.fit(scaled_vectors[:end_train_range], binary_targets[:end_train_range])
-            score = svc.score(scaled_vectors[end_train_range:], binary_targets[end_train_range:])
-            print("SVM score with standard validation set is %f" % (score))
 
 class SimpleModel(nn.Module):
     def train(self):
@@ -204,18 +226,18 @@ class SimpleModel(nn.Module):
         self.optimizer.step()
 
 class SvmlikeModel(SimpleModel):
-    def __init__(self, input_dims, lr=0.1):
+    def __init__(self, input_dims, lr=0.1, c=0.1, decay=0.1):
         super(SvmlikeModel, self).__init__()
         self.fc1 = nn.Linear(input_dims, 1)
-        self.loss = HingeLoss(c=0.01)
-        self.optimizer = optim.SGD(self.parameters(), lr=lr)
+        self.loss = HingeLoss(c=c)
+        self.optimizer = optim.SGD(self.parameters(), lr=lr, weight_decay=decay)
 
     def forward(self, batch):
         x = self.fc1(batch)
         return x
 
 class ExtendedModel(SimpleModel):
-    def __init__(self, input_dims, hidden_dims, lr=0.1, init=None):
+    def __init__(self, input_dims, hidden_dims, lr=0.1, c=0.1, init=None):
         super(ExtendedModel, self).__init__()
         self.fc1 = nn.Linear(input_dims, hidden_dims)
         self.output = nn.Linear(hidden_dims, 1)
@@ -226,12 +248,12 @@ class ExtendedModel(SimpleModel):
             self.output.weight.data[0,0] = 1.
 
         self.relu = nn.ReLU()
-        self.loss = HingeLoss(c=0.1)
+        self.loss = HingeLoss(c=c)
         self.optimizer = optim.SGD(self.parameters(), lr=lr)
 
     def forward(self, batch):
         x = self.fc1(batch)
-        #x = self.relu(x)
+        x = self.relu(x)
         x = self.output(x)
         return x
 
