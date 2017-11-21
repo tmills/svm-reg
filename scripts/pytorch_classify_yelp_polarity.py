@@ -44,7 +44,7 @@ def main(args):
     default_c = 1.0
     default_decay = 0.0
     hidden_nodes = 128
-    batch_size = 32
+    batch_size = 512
 
     if len(args) < 1:
         sys.stderr.write("One required argument: <train directory>\n")
@@ -101,7 +101,7 @@ def main(args):
     # transform the data into pytorch format:
     ####################################################################
     yelp_train_data = YelpPolarityDataset(scaled_vectors[:end_train_range], class_targets[:end_train_range])
-    train_loader = DataLoader(yelp_train_data, shuffle=True, batch_size=32)
+    train_loader = DataLoader(yelp_train_data, shuffle=True, batch_size=batch_size, num_workers=1)
     yelp_valid_data = YelpPolarityDataset(scaled_vectors[end_train_range:], class_targets[end_train_range:])
     valid_loader = DataLoader(yelp_valid_data)
 
@@ -132,6 +132,9 @@ def main(args):
             loss.backward()
             model.update()
 
+        train_time = time.time() - epoch_start
+        #print("Training during epoch %d took %fs\n" % (epoch, train_time))
+
         valid_acc = 0.0
         valid_loss = 0.0
         for data in valid_loader:
@@ -143,11 +146,11 @@ def main(args):
             else:
                 inputs, labels = Variable(inputs), Variable(labels)
 
-            valid_answer = model(inputs).cpu()
+            valid_answer = model(inputs)
             valid_loss += model.criterion(valid_answer, labels)
 
             data_proportion = float(inputs.size()[0]) / num_valid_instances
-            valid_acc += data_proportion * accuracy_score(np.sign(valid_answer.data.numpy()), labels.data.numpy())
+            valid_acc += data_proportion * accuracy_score(np.sign(valid_answer.cpu().data.numpy()), labels.cpu().data.numpy())
 
         prev_valid_acc = valid_acc
 

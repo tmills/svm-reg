@@ -36,6 +36,10 @@ class SvmlikeModel(SimpleModel):
         x = self.fc1(batch)
         return x
 
+    def cuda(self):
+        super(SvmlikeModel, self).cuda()
+        self.loss.cuda()
+        
 class ExtendedModel(SimpleModel):
     def __init__(self, input_dims, hidden_dims, lr=0.1, c=0.1, init=None):
         super(ExtendedModel, self).__init__()
